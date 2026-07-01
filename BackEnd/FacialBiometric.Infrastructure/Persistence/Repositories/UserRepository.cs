@@ -17,6 +17,12 @@ internal sealed class UserRepository(AppDbContext context) : IUserRepository
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
+    public async Task<IReadOnlyCollection<User>> GetActiveWithFaceEmbeddingAsync(CancellationToken cancellationToken = default)
+        => await context.Users
+            .AsNoTracking()
+            .Where(x => x.IsActive && x.FaceEmbedding != null)
+            .ToListAsync(cancellationToken);
+
     public async Task AddAsync(User user, CancellationToken cancellationToken = default)
         => await context.Users.AddAsync(user, cancellationToken);
 }

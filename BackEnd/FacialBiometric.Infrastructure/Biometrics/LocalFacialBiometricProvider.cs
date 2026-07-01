@@ -61,17 +61,7 @@ internal sealed class LocalFacialBiometricProvider : IFacialBiometricProvider, I
     public Task<Result<FaceMatchResult>> CompareAsync(
         string storedEmbedding, byte[] candidatePhotoContent, CancellationToken cancellationToken = default)
     {
-        float[]? stored;
-        try
-        {
-            stored = JsonSerializer.Deserialize<float[]>(storedEmbedding);
-        }
-        catch (JsonException)
-        {
-            return Task.FromResult(Result.Failure<FaceMatchResult>(InvalidStoredEmbeddingError));
-        }
-
-        if (stored is null || stored.Length != FaceEmbedder.EmbeddingSize)
+        if (!TryDeserializeEmbedding(storedEmbedding, out var stored))
         {
             return Task.FromResult(Result.Failure<FaceMatchResult>(InvalidStoredEmbeddingError));
         }
@@ -82,10 +72,44 @@ internal sealed class LocalFacialBiometricProvider : IFacialBiometricProvider, I
             return Task.FromResult(Result.Failure<FaceMatchResult>(extraction.Error));
         }
 
-        var similarity = CosineSimilarity(stored, extraction.Embedding!);
+        var similarity = CosineSimilarity(stored!, extraction.Embedding!);
         var isMatch = similarity >= MatchThreshold;
 
         return Task.FromResult(Result.Success(new FaceMatchResult(isMatch, similarity)));
+    }
+
+    public Task<Result<FaceMatchResult>> CompareEmbeddingsAsync(
+        string storedEmbedding, string candidateEmbedding, CancellationToken cancellationToken = default)
+    {
+        if (!TryDeserializeEmbedding(storedEmbedding, out var stored))
+        {
+            return Task.FromResult(Result.Failure<FaceMatchResult>(InvalidStoredEmbeddingError));
+        }
+
+        if (!TryDeserializeEmbedding(candidateEmbedding, out var candidate))
+        {
+            return Task.FromResult(Result.Failure<FaceMatchResult>(InvalidStoredEmbeddingError));
+        }
+
+        var similarity = CosineSimilarity(stored!, candidate!);
+        var isMatch = similarity >= MatchThreshold;
+
+        return Task.FromResult(Result.Success(new FaceMatchResult(isMatch, similarity)));
+    }
+
+    private static bool TryDeserializeEmbedding(string json, out float[]? embedding)
+    {
+        try
+        {
+            embedding = JsonSerializer.Deserialize<float[]>(json);
+        }
+        catch (JsonException)
+        {
+            embedding = null;
+            return false;
+        }
+
+        return embedding is not null && embedding.Length == FaceEmbedder.EmbeddingSize;
     }
 
     /// <summary>Detecta o maior/melhor rosto da foto e retorna o embedding (512-d) alinhado.</summary>

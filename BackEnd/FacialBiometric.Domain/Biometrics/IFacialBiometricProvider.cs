@@ -23,4 +23,13 @@ public interface IFacialBiometricProvider
         string storedEmbedding,
         byte[] candidatePhotoContent,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Compara dois embeddings já extraídos, sem reprocessar imagem (usado na checagem
+    /// de rosto duplicado durante o cadastro, contra vários usuários já cadastrados).
+    /// </summary>
+    Task<Result<FaceMatchResult>> CompareEmbeddingsAsync(
+        string storedEmbedding,
+        string candidateEmbedding,
+        CancellationToken cancellationToken = default);
 }
