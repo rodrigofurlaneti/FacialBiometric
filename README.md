@@ -55,11 +55,59 @@ Users
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `POST` | `/api/users` | Cadastra usuário (FullName + Photo, multipart/form-data) |
+| `POST` | `/api/users` | Cadastra usuário (FullName + Photo, multipart/form-data). Rejeita com `409 User.AlreadyExists` se o rosto já pertencer a outro usuário ativo. |
 | `GET` | `/api/users/{id}/has-photo` | Retorna `{ hasPhoto: bool, photoRegisteredAt }` |
-| `POST` | `/api/users/{id}/verify-face` | Compara foto enviada com a cadastrada |
+| `POST` | `/api/users/{id}/verify-face` | Verificação 1:1 — compara a foto enviada com a cadastrada de um usuário já conhecido (`id` na rota) |
+| `POST` | `/api/users/authenticate-face` | Autenticação/identificação 1:N — recebe só uma foto (sem `id`) e procura entre todos os usuários cadastrados quem corresponde. Ver seção própria abaixo. |
 
-Todos exigem `[Authorize]` (JWT Bearer).
+Todos exigem `[Authorize]` (JWT Bearer). O Swagger (Development) já vem com o
+botão **Authorize** configurado — cole o token JWT puro, sem o prefixo
+`Bearer ` (o Swashbuckle adiciona automaticamente).
+
+### Cadastro — checagem de rosto duplicado
+
+`RegisterUserCommandHandler` extrai o embedding da foto **antes** de gravar
+qualquer coisa no banco e compara contra o de todos os usuários ativos já
+cadastrados (`IUserRepository.GetActiveWithFaceEmbeddingAsync`, via
+`IFacialBiometricProvider.CompareEmbeddingsAsync` — compara dois embeddings já
+extraídos, sem reprocessar imagem). Se a similaridade de algum já cadastrado
+passar do `MatchThreshold`, o cadastro é recusado com `409 User.AlreadyExists`
+e nada é persistido. Se a foto nova não tiver rosto detectável, a checagem é
+pulada e o cadastro segue como antes (embedding fica `NULL`).
+
+### Autenticação por Face ID (1:N) — `POST /api/users/authenticate-face`
+
+Pensado como "login por rosto": recebe uma única foto (`Photo`,
+multipart/form-data) e devolve:
+
+```jsonc
+// rosto reconhecido
+{
+  "isAuthenticated": true,
+  "userId": 1,
+  "fullName": "Rodrigo Luiz Madeira Furlaneti",
+  "confidence": 0.91,
+  "message": null
+}
+
+// rosto não encontrado na base
+{
+  "isAuthenticated": false,
+  "userId": null,
+  "fullName": null,
+  "confidence": null,
+  "message": "Usuário não existe na base de dados."
+}
+```
+
+Foto inválida ou sem rosto detectável continua retornando `400` (erro de
+imagem), não é tratado como "não autenticado".
+
+⚠️ Como o controller inteiro está com `[Authorize]`, hoje essa rota também
+exige um JWT válido — ou seja, ela serve para *identificar* um usuário já
+autenticado por outro meio, não para logar alguém do zero sem token. Se a
+intenção for usá-la como o próprio mecanismo de login (chamada antes de existir
+qualquer token), marque a action com `[AllowAnonymous]`.
 
 ## Modelo de biometria facial — implementado
 
@@ -101,6 +149,7 @@ seu caso de uso**. Antes de ir pra produção:
 | `FacialBiometric.InvalidImage` | Arquivo enviado não é uma imagem válida/legível |
 | `FacialBiometric.NoFaceDetected` | Nenhum rosto identificável na foto |
 | `FacialBiometric.InvalidStoredEmbedding` | Embedding salvo no banco está corrompido/formato antigo |
+| `User.AlreadyExists` (409) | No cadastro (`POST /api/users`), o rosto enviado já corresponde a outro usuário ativo |
 
 ### Performance
 
@@ -121,12 +170,20 @@ ou ser público/sem auth), me avise que eu ajusto.
 
 ## Setup rápido
 
-1. Rodar `Sql/create_facialbiometric_db.sql` no SQL Server.
-2. `cd BackEnd/FacialBiometricAPI && dotnet restore`
-3. Ajustar `FacialBiometricAPI.API/appsettings.json`: `ConnectionStrings:DefaultConnection`
+1. `cd BackEnd && dotnet restore`
+2. Ajustar `FacialBiometric.API/appsettings.json`: `ConnectionStrings:DefaultConnection`
    e `Jwt:Secret` (mesmo valor do OpenFinancialExchange).
-4. `dotnet ef migrations add InitialCreate -p FacialBiometricAPI.Infrastructure -s FacialBiometricAPI.API`
-   (ou aplicar o script SQL manualmente, já que a tabela é criada por ele).
-5. `dotnet run --project FacialBiometricAPI.API`
+3. Criar o banco/schema via EF Core (não existe migration versionada em SQL puro):
+   ```
+   dotnet tool install --global dotnet-ef   # se ainda não tiver
+   dotnet ef migrations add InitialCreate --project FacialBiometric.Infrastructure --startup-project FacialBiometric.API
+   dotnet ef database update --project FacialBiometric.Infrastructure --startup-project FacialBiometric.API
+   ```
+   (o usuário Windows rodando o comando precisa ter permissão `dbcreator`/`sysadmin`
+   na instância SQL Server local para o `database update` criar o banco).
+4. `dotnet run --project FacialBiometric.API`
+5. Abrir `https://localhost:<porta>/swagger`, clicar em **Authorize** e colar um
+   JWT válido (mesmo Secret/Issuer/Audience do `appsettings.json`) para testar
+   os endpoints — todos exigem `[Authorize]`.
 6. Calibrar `MatchThreshold` em `LocalFacialBiometricProvider` com fotos reais
-   antes de liberar `/verify-face` em produção (ver seção acima).
+   antes de liberar `/verify-face` e `/authenticate-face` em produção (ver seção acima).
