@@ -39,7 +39,7 @@ public interface IFacialBiometricProvider
     /// <see cref="IFaceEmbeddingIndex"/> uma única vez por usuário, em vez de reparsear o
     /// JSON a cada comparação.
     /// </summary>
-    float[]? DecodeEmbedding(string embedding);
+    float[]? DecodeEmbedding(string? embedding);
 
     /// <summary>
     /// Compara dois embeddings já decodificados (sem I/O, sem parsing de JSON) — é a

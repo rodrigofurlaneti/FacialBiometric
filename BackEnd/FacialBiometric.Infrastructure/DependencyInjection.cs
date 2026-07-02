@@ -5,6 +5,7 @@ using FacialBiometric.Infrastructure.Biometrics;
 using FacialBiometric.Infrastructure.Persistence;
 using FacialBiometric.Infrastructure.Persistence.Repositories;
 using FacialBiometric.Infrastructure.Storage;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;

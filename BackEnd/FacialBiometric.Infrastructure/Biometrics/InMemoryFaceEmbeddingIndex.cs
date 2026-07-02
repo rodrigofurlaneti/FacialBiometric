@@ -50,13 +50,20 @@ internal sealed class InMemoryFaceEmbeddingIndex(IServiceScopeFactory scopeFacto
             _entries.Clear();
             foreach (var user in users)
             {
-                var embedding = facialBiometricProvider.DecodeEmbedding(user.FaceEmbedding!);
+                // O filtro do repositório compara a coluna crua (nível SQL) — um registro
+                // gravado ANTES da criptografia entrar em vigor tem valor não-nulo no banco,
+                // mas falha ao descriptografar na leitura e chega aqui como null. Trata igual
+                // a um embedding corrompido: fica de fora do índice, sem derrubar o restante.
+                if (user.FaceEmbedding is null)
+                {
+                    continue;
+                }
+
+                var embedding = facialBiometricProvider.DecodeEmbedding(user.FaceEmbedding);
                 if (embedding is not null)
                 {
                     _entries[user.Id] = new FaceEmbeddingIndexEntry(user.Id, user.FullName, embedding);
                 }
-                // embedding corrompido/formato antigo: fica de fora do índice até o
-                // usuário refazer o cadastro da foto — não derruba o carregamento inteiro.
             }
 
             _loaded = true;
