@@ -97,6 +97,15 @@ internal sealed class LocalFacialBiometricProvider : IFacialBiometricProvider, I
         return Task.FromResult(Result.Success(new FaceMatchResult(isMatch, similarity)));
     }
 
+    public float[]? DecodeEmbedding(string embedding)
+        => TryDeserializeEmbedding(embedding, out var value) ? value : null;
+
+    public FaceMatchResult CompareDecodedEmbeddings(float[] storedEmbedding, float[] candidateEmbedding)
+    {
+        var similarity = CosineSimilarity(storedEmbedding, candidateEmbedding);
+        return new FaceMatchResult(similarity >= MatchThreshold, similarity);
+    }
+
     private static bool TryDeserializeEmbedding(string json, out float[]? embedding)
     {
         try

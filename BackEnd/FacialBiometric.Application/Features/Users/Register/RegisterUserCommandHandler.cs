@@ -1,4 +1,4 @@
-﻿using FacialBiometric.Application.Abstractions.Messaging;
+using FacialBiometric.Application.Abstractions.Messaging;
 using FacialBiometric.Domain.Biometrics;
 using FacialBiometric.Domain.Entities;
 using FacialBiometric.Domain.Primitives;
@@ -11,7 +11,8 @@ internal sealed class RegisterUserCommandHandler(
     IUserRepository repository,
     IUnitOfWork unitOfWork,
     IPhotoStorageService photoStorage,
-    IFacialBiometricProvider facialBiometricProvider)
+    IFacialBiometricProvider facialBiometricProvider,
+    IFaceEmbeddingIndex faceEmbeddingIndex)
     : ICommandHandler<RegisterUserCommand, long>
 {
     private static readonly Error DuplicateFaceError = new(
@@ -36,22 +37,23 @@ internal sealed class RegisterUserCommandHandler(
         var embeddingResult = await facialBiometricProvider.ExtractEmbeddingAsync(
             request.PhotoContent, cancellationToken);
 
-        var faceEmbedding = embeddingResult.IsSuccess ? embeddingResult.Value.Embedding : null;
+        var faceEmbeddingJson = embeddingResult.IsSuccess ? embeddingResult.Value.Embedding : null;
+        var faceEmbeddingVector = faceEmbeddingJson is not null
+            ? facialBiometricProvider.DecodeEmbedding(faceEmbeddingJson)
+            : null;
 
-        // 3. Checar se o rosto já pertence a alguém cadastrado.
-        if (faceEmbedding is not null)
+        // 3. Checar se o rosto já pertence a alguém cadastrado — via índice em memória
+        //    (embeddings já decodificados, sem reparsear JSON nem bater no banco de novo).
+        if (faceEmbeddingVector is not null)
         {
-            var existingUsers = await repository.GetActiveWithFaceEmbeddingAsync(cancellationToken);
+            var indexedUsers = await faceEmbeddingIndex.GetAllAsync(cancellationToken);
 
-            foreach (var existingUser in existingUsers)
+            var duplicate = indexedUsers.FirstOrDefault(entry =>
+                facialBiometricProvider.CompareDecodedEmbeddings(entry.Embedding, faceEmbeddingVector).IsMatch);
+
+            if (duplicate is not null)
             {
-                var matchResult = await facialBiometricProvider.CompareEmbeddingsAsync(
-                    existingUser.FaceEmbedding!, faceEmbedding, cancellationToken);
-
-                if (matchResult.IsSuccess && matchResult.Value.IsMatch)
-                {
-                    return Result.Failure<long>(DuplicateFaceError);
-                }
+                return Result.Failure<long>(DuplicateFaceError);
             }
         }
 
@@ -64,13 +66,20 @@ internal sealed class RegisterUserCommandHandler(
             user.Id, request.PhotoContent, request.PhotoFileName, cancellationToken);
 
         // 6. Gravar o resultado do cadastro biométrico no aggregate
-        var registerPhotoResult = user.RegisterPhoto(photoPath, faceEmbedding);
+        var registerPhotoResult = user.RegisterPhoto(photoPath, faceEmbeddingJson);
         if (registerPhotoResult.IsFailure)
         {
             return Result.Failure<long>(registerPhotoResult.Error);
         }
 
         await unitOfWork.CommitAsync(cancellationToken);
+
+        // 7. Atualiza o índice em memória na hora — sem esperar o próximo recarregamento —
+        //    pra que uma tentativa de cadastro duplicado logo em seguida já seja pega.
+        if (faceEmbeddingVector is not null)
+        {
+            faceEmbeddingIndex.Upsert(user.Id, user.FullName, faceEmbeddingVector);
+        }
 
         return Result.Success(user.Id);
     }

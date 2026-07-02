@@ -8,7 +8,7 @@ namespace FacialBiometric.Domain.Biometrics;
 /// Implementação concreta: <c>LocalFacialBiometricProvider</c>
 /// (Infrastructure/Biometrics), usando FaceONNX (detecção + landmarks +
 /// embedding 512-d via ONNX Runtime, local/on-premise). Ver
-/// README_FACIALBIOMETRIC_API.md para detalhes do modelo e do threshold
+/// README.md para detalhes do modelo e do threshold
 /// de decisão usado na comparação.
 /// </summary>
 public interface IFacialBiometricProvider
@@ -32,4 +32,18 @@ public interface IFacialBiometricProvider
         string storedEmbedding,
         string candidateEmbedding,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Decodifica um embedding serializado (JSON) para o vetor de floats. Retorna null se
+    /// o texto estiver corrompido/em formato inesperado. Usado para popular o
+    /// <see cref="IFaceEmbeddingIndex"/> uma única vez por usuário, em vez de reparsear o
+    /// JSON a cada comparação.
+    /// </summary>
+    float[]? DecodeEmbedding(string embedding);
+
+    /// <summary>
+    /// Compara dois embeddings já decodificados (sem I/O, sem parsing de JSON) — é a
+    /// operação "quente" usada em loop pela autenticação 1:N via <see cref="IFaceEmbeddingIndex"/>.
+    /// </summary>
+    FaceMatchResult CompareDecodedEmbeddings(float[] storedEmbedding, float[] candidateEmbedding);
 }

@@ -1,10 +1,16 @@
 ﻿using FacialBiometric.Domain.Entities;
+using FacialBiometric.Infrastructure.Persistence.Converters;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace FacialBiometric.Infrastructure.Persistence.Configurations;
 
-internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
+/// <param name="embeddingProtector">
+/// Protetor dedicado (purpose string próprio) usado só pra criptografar
+/// <see cref="User.FaceEmbedding"/> em repouso — ver <see cref="EncryptedStringConverter"/>.
+/// </param>
+internal sealed class UserConfiguration(IDataProtector embeddingProtector) : IEntityTypeConfiguration<User>
 {
     public void Configure(EntityTypeBuilder<User> builder)
     {
@@ -19,8 +25,12 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(x => x.PhotoPath)
             .HasMaxLength(500);
 
+        // Dado biométrico = dado sensível (LGPD/GDPR) — criptografado em repouso.
+        // Domain/Application continuam lendo/escrevendo o JSON em texto claro;
+        // só a coluna no banco guarda o ciphertext (ver EncryptedStringConverter).
         builder.Property(x => x.FaceEmbedding)
-            .HasColumnType("nvarchar(max)");
+            .HasColumnType("nvarchar(max)")
+            .HasConversion(new EncryptedStringConverter(embeddingProtector));
 
         builder.Property(x => x.PhotoRegisteredAt)
             .HasColumnType("datetime2");

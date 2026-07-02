@@ -1,8 +1,6 @@
 using FacialBiometric.Application.Abstractions.Messaging;
 using FacialBiometric.Domain.Biometrics;
-using FacialBiometric.Domain.Entities;
 using FacialBiometric.Domain.Primitives;
-using FacialBiometric.Domain.Repositories;
 
 namespace FacialBiometric.Application.Features.Users.AuthenticateFace;
 
@@ -12,8 +10,9 @@ namespace FacialBiometric.Application.Features.Users.AuthenticateFace;
 /// já sabe qual usuário comparar), aqui o usuário é desconhecido a priori.
 /// </summary>
 internal sealed class AuthenticateFaceCommandHandler(
-    IUserRepository repository,
-    IFacialBiometricProvider facialBiometricProvider)
+    IFacialBiometricProvider facialBiometricProvider,
+    IFaceEmbeddingIndex faceEmbeddingIndex,
+    ILivenessDetector livenessDetector)
     : ICommandHandler<AuthenticateFaceCommand, AuthenticateFaceResponse>
 {
     private static readonly AuthenticateFaceResponse NotFoundResponse =
@@ -22,8 +21,20 @@ internal sealed class AuthenticateFaceCommandHandler(
     public async Task<Result<AuthenticateFaceResponse>> Handle(
         AuthenticateFaceCommand request, CancellationToken cancellationToken)
     {
-        // 1. Extrair o embedding da foto candidata (pode falhar: nenhum rosto detectado
-        //    ou imagem inválida — nesses casos retorna erro, não "não autenticado").
+        // 1. Checagem de vivacidade (heurística passiva) — aplicada aqui e não no
+        //    cadastro, porque este é o "portão de acesso" de verdade. Ver
+        //    PassiveLivenessDetector e o README para as limitações dessa heurística.
+        var liveness = await livenessDetector.AssessAsync(request.PhotoContent, cancellationToken);
+        if (!liveness.IsLikelyLive)
+        {
+            return Result.Failure<AuthenticateFaceResponse>(new Error(
+                "FacialBiometric.LivenessCheckFailed",
+                $"A foto não passou na checagem de vivacidade (score {liveness.Score:0.00}). " +
+                $"Sinais: {(liveness.Signals.Count == 0 ? "nenhum específico" : string.Join(", ", liveness.Signals))}. " +
+                "Tire uma nova foto direto da câmera, com boa iluminação e sem reflexos."));
+        }
+
+        // 2. Extrair o embedding da foto candidata.
         var embeddingResult = await facialBiometricProvider.ExtractEmbeddingAsync(
             request.PhotoContent, cancellationToken);
 
@@ -32,41 +43,49 @@ internal sealed class AuthenticateFaceCommandHandler(
             return Result.Failure<AuthenticateFaceResponse>(embeddingResult.Error);
         }
 
-        var candidateEmbedding = embeddingResult.Value.Embedding;
-
-        // 2. Comparar contra todos os usuários ativos que já têm rosto cadastrado,
-        //    ficando com o de maior similaridade.
-        var existingUsers = await repository.GetActiveWithFaceEmbeddingAsync(cancellationToken);
-
-        User? bestMatch = null;
-        var bestConfidence = 0.0;
-
-        foreach (var existingUser in existingUsers)
+        var candidateEmbedding = facialBiometricProvider.DecodeEmbedding(embeddingResult.Value.Embedding);
+        if (candidateEmbedding is null)
         {
-            var matchResult = await facialBiometricProvider.CompareEmbeddingsAsync(
-                existingUser.FaceEmbedding!, candidateEmbedding, cancellationToken);
-
-            if (matchResult.IsFailure || !matchResult.Value.IsMatch)
-            {
-                continue;
-            }
-
-            if (bestMatch is null || matchResult.Value.Confidence > bestConfidence)
-            {
-                bestMatch = existingUser;
-                bestConfidence = matchResult.Value.Confidence;
-            }
+            return Result.Failure<AuthenticateFaceResponse>(new Error(
+                "FacialBiometric.InvalidStoredEmbedding",
+                "Falha ao processar o embedding extraído da foto enviada."));
         }
 
-        // 3. Nenhum usuário correspondente encontrado.
+        // 3. Comparar contra o índice em memória, em paralelo (CPU-bound, sem I/O —
+        //    os embeddings já estão decodificados). Ficamos com o de maior confiança.
+        var indexedUsers = await faceEmbeddingIndex.GetAllAsync(cancellationToken);
+
+        var lockObj = new object();
+        FaceEmbeddingIndexEntry? bestMatch = null;
+        var bestConfidence = 0.0;
+
+        Parallel.ForEach(indexedUsers, entry =>
+        {
+            var match = facialBiometricProvider.CompareDecodedEmbeddings(entry.Embedding, candidateEmbedding);
+            if (!match.IsMatch)
+            {
+                return;
+            }
+
+            lock (lockObj)
+            {
+                if (bestMatch is null || match.Confidence > bestConfidence)
+                {
+                    bestMatch = entry;
+                    bestConfidence = match.Confidence;
+                }
+            }
+        });
+
+        // 4. Nenhum usuário correspondente encontrado.
         if (bestMatch is null)
         {
             return Result.Success(NotFoundResponse);
         }
 
-        // 4. Rosto reconhecido.
+        // 5. Rosto reconhecido.
         var response = new AuthenticateFaceResponse(
-            true, bestMatch.Id, bestMatch.FullName, bestConfidence, null);
+            true, bestMatch.UserId, bestMatch.FullName, bestConfidence, null);
 
         return Result.Success(response);
     }
